@@ -600,7 +600,29 @@ def page_synthese():
     gain_total_an = (gain_total / n_years) if (gain_total is not None and n_years and n_years > 0) else None
     gain_total_pct_an = (gain_total_an / total_deposits * 100) if (gain_total_an is not None and total_deposits > 0) else None
 
-    # -- Bloc 0 : Apports --
+    # -- Bloc 0 : PEA --
+    from datetime import date as _date3
+    ouverture_pea = _date3(2023, 8, 22)
+    cinq_ans_pea = _date3(2028, 8, 22)
+    today3 = _date3.today()
+    jours_restants = (cinq_ans_pea - today3).days
+    mois_restants = jours_restants // 30
+    ans_restants = mois_restants // 12
+    mois_r = mois_restants % 12
+    atteint = today3 >= cinq_ans_pea
+
+    st.subheader("Mon PEA")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Date d'ouverture", ouverture_pea.strftime("%d/%m/%Y"))
+    c2.metric("Exonération fiscale le", cinq_ans_pea.strftime("%d/%m/%Y"))
+    if atteint:
+        c3.metric("Statut fiscal", "Exonéré ✓", delta="5 ans atteints")
+    else:
+        c3.metric("Temps restant", f"{ans_restants} ans {mois_r} mois", delta=f"{jours_restants} jours", delta_color="off")
+
+    st.divider()
+
+    # -- Bloc Apports --
     st.subheader("Apports")
     st.metric("Total apporté sur le PEA", f"{total_deposits:,.2f} EUR")
 
