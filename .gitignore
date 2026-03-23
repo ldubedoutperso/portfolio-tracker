@@ -1,0 +1,12 @@
+__pycache__/
+.pytest_cache/
+.claude/
+*.pyc
+*.pyo
+.env
+
+# Inbox : fichiers CSV locaux, pas besoin sur le cloud
+data/inbox/
+
+# Secrets locaux (ne jamais commiter)
+.streamlit/secrets.toml
