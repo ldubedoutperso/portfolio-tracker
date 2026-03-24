@@ -53,22 +53,9 @@ with st.sidebar:
     st.title("Portfolio PEA")
     page = st.radio(
         "Navigation",
-        ["Dashboard", "Synthèse", "Positions actuelles", "Positions soldées", "Mouvements"],
+        ["Dashboard", "Synthèse", "Positions actuelles", "Positions soldées", "Mouvements", "Importer"],
     )
     st.divider()
-
-    if st.button("Vérifier inbox", use_container_width=True):
-        with st.spinner("Importation en cours..."):
-            results = process_inbox(str(INBOX_DIR), db)
-        if results:
-            for r in results:
-                st.success(
-                    f"{r['imported']} nouvelle(s) operation(s) "
-                    f"({r['duplicates']} doublon(s)) depuis {r['file']}"
-                )
-            fetch_prices.clear()
-        else:
-            st.info("Aucun nouveau fichier dans inbox/")
 
     count = db.get_operation_count()
     st.metric("Opérations en base", count)
@@ -757,6 +744,59 @@ def page_mouvements():
     st.caption(f"{len(df)} opération(s) affichée(s)")
 
 
+
+# ─────────────────────────────────────────────
+# PAGE : Importer
+# ─────────────────────────────────────────────
+def page_importer():
+    import tempfile, os, base64
+    st.header("Importer des données")
+
+    st.info("Télécharge le CSV depuis Boursorama (onglet Mouvements, séparateur `;`, encodage UTF-8), puis dépose-le ci-dessous.")
+
+    uploaded = st.file_uploader("Fichier CSV Boursorama", type=["csv"])
+
+    if uploaded is not None:
+        if st.button("Importer", type="primary", use_container_width=True):
+            with st.spinner("Import en cours..."):
+                # Sauvegarde temporaire du fichier uploadé
+                with tempfile.NamedTemporaryFile(mode="wb", suffix=".csv", delete=False) as tmp:
+                    tmp.write(uploaded.getvalue())
+                    tmp_path = tmp.name
+
+                try:
+                    from src.importer import import_csv
+                    inserted, duplicates = import_csv(tmp_path, db)
+                finally:
+                    os.unlink(tmp_path)
+
+            if inserted > 0:
+                st.success(f"{inserted} nouvelle(s) opération(s) importée(s) ({duplicates} doublon(s) ignoré(s))")
+            else:
+                st.warning(f"Aucune nouvelle opération — {duplicates} doublon(s) ignoré(s)")
+
+            # Push DB vers GitHub
+            token = st.secrets.get("github_token", "")
+            repo_name = st.secrets.get("github_repo", "ldubedoutperso/portfolio-tracker")
+            if token:
+                try:
+                    from github import Github
+                    g = Github(token)
+                    repo = g.get_repo(repo_name)
+                    with open(DB_PATH, "rb") as f:
+                        content = f.read()
+                    try:
+                        current = repo.get_contents("data/portfolio.db")
+                        repo.update_file("data/portfolio.db", "Mise à jour base de données", content, current.sha)
+                    except Exception:
+                        repo.create_file("data/portfolio.db", "Création base de données", content)
+                    st.success("Base de données sauvegardée sur GitHub — le cloud se met à jour automatiquement.")
+                    fetch_prices.clear()
+                except Exception as e:
+                    st.error(f"Erreur GitHub : {e}")
+            else:
+                st.warning("Token GitHub non configuré — données non sauvegardées sur le cloud.")
+
 # ─────────────────────────────────────────────
 # Routage
 # ─────────────────────────────────────────────
@@ -770,3 +810,5 @@ elif page == "Synthèse":
     page_synthese()
 elif page == "Mouvements":
     page_mouvements()
+elif page == "Importer":
+    page_importer()
