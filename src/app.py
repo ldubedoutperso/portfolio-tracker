@@ -22,8 +22,10 @@ def check_password():
     if st.session_state.get("authenticated"):
         return True
     st.title("Portfolio PEA")
-    pwd = st.text_input("Mot de passe", type="password")
-    if st.button("Connexion"):
+    with st.form("login_form"):
+        pwd = st.text_input("Mot de passe", type="password")
+        submitted = st.form_submit_button("Connexion")
+    if submitted:
         if pwd == st.secrets.get("password", ""):
             st.session_state["authenticated"] = True
             st.rerun()
