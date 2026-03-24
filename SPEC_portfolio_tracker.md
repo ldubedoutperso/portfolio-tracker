@@ -2,11 +2,12 @@
 
 ## Contexte
 
-Application locale de suivi d'un PEA Boursorama.  
-Langage : **Python 3.10+**  
-Interface : **Streamlit** (web locale, navigateur)  
-Stockage : **SQLite** (`data/portfolio.db`)  
-Cross-platform : Windows / macOS / Linux
+Application de suivi d'un PEA Boursorama, déployée sur Streamlit Cloud.
+Langage : **Python 3.11+**
+Interface : **Streamlit** (web, navigateur)
+Stockage : **SQLite** (`data/portfolio.db`)
+Déploiement : **Streamlit Community Cloud** — https://portfolio-tracker-perso.streamlit.app
+Protection : mot de passe via `st.secrets`
 
 ---
 
@@ -15,65 +16,64 @@ Cross-platform : Windows / macOS / Linux
 ```
 portfolio-tracker/
 ├── src/
-│   ├── importer.py          # Import CSV (initial + incrémental)
-│   ├── calculator.py        # Algorithme CMP itératif
+│   ├── importer.py          # Import CSV (initial + incrémental + upload)
+│   ├── calculator.py        # Algorithme PRU/CMP itératif
 │   ├── models.py            # Dataclasses Operation, Position, Cycle
-│   ├── db.py                # Accès SQLite
-│   ├── quotes.py            # Cours temps réel via yfinance
-│   └── app.py               # Application Streamlit
+│   ├── db.py                # Accès SQLite + settings clé/valeur
+│   ├── quotes.py            # Cours temps réel + historique via yfinance
+│   └── app.py               # Application Streamlit (6 pages)
 ├── data/
-│   ├── portfolio.db         # Base SQLite (créée automatiquement)
-│   └── inbox/               # Dossier de dépôt des nouveaux CSV Boursorama
+│   ├── portfolio.db         # Base SQLite (commitée sur GitHub)
+│   └── inbox/               # Dépôt local CSV (non utilisé en prod)
 ├── tests/
-│   └── test_calculator.py   # Tests de validation CMP
+│   ├── conftest.py
+│   └── test_calculator.py
+├── .streamlit/
+│   └── secrets.toml         # Secrets locaux (jamais commité)
+├── run.bat                  # Lancement rapide Windows
 ├── requirements.txt
 └── README.md
 ```
 
 ---
 
+## Pages de l'application
+
+| Page | Contenu |
+|------|---------|
+| **Dashboard** | Performance journalière, versements cumulés vs objectif, répartition, PV réalisée/dividendes par année, PV latente par position, évolution PRU (DCA) avec cours historique |
+| **Synthèse** | Date ouverture PEA + countdown 5 ans (exonération), apports, argent disponible, performance annualisée, gain total si sortie |
+| **Positions actuelles** | Tableau PRU, cours, PV latente, dividendes |
+| **Positions soldées** | Cycles clos : PV réalisée, dividendes, résultat net |
+| **Mouvements** | Historique brut, filtres valeur/type/année |
+| **Importer** | Upload CSV Boursorama → import + push GitHub automatique |
+
+---
+
 ## Source de données
 
-### Format CSV unique (source de vérité)
+### Format CSV Boursorama (source de vérité)
 
-Tous les imports utilisent le **même format CSV Boursorama** :
 - Séparateur : point-virgule (`;`)
 - Encodage : UTF-8 BOM (`utf-8-sig`)
 - Dates : `dd/mm/yyyy`
-- Cours : `"62,87 €"` (virgule décimale + symbole euro, entre guillemets)
-- Montant : nombre décimal avec point (`-126.37`)
+- Montant : décimal avec point (`-126.37`) ou virgule française (`-126,37`)
 
 **En-tête :**
 ```
 "Date opération";"Date valeur";Opération;Valeur;"Code ISIN";Montant;Quantité;Cours
 ```
 
-**La base initiale** est constituée en copiant-collant l'onglet Mouvements de l'Excel en CSV avec ce format.  
-**Les mises à jour** se font en déposant de nouveaux CSV Boursorama dans `data/inbox/`.
-
-### Colonnes utilisées
-
-| Colonne | Contenu | Utilisé |
-|---|---|---|
-| Date opération | Date de l'opération | ✅ |
-| Date valeur | Date de valeur | ❌ ignoré |
-| Opération | Type d'opération | ✅ |
-| Valeur | Nom de la valeur | ✅ |
-| Code ISIN | ISIN | ✅ |
-| Montant | Montant en € (négatif = débit) | ✅ |
-| Quantité | Nombre de titres | ✅ |
-| Cours | Cours unitaire | ❌ ignoré (recalculé) |
-
 ### Types d'opérations
 
 | Type (préfixe) | Traitement |
 |---|---|
 | `ACHAT COMPTANT` | Achat — montant négatif |
-| `ACHAT COMPTANT ETR` | Achat ETF étranger — montant négatif |
+| `ACHAT COMPTANT ETR` | Achat ETF étranger — même logique |
 | `VENTE COMPTANT` | Vente — montant positif |
-| `COUPONS` | Dividende — montant positif |
-| `VIR...` | Virement — **ignoré** pour le calcul portefeuille |
-| `FRAIS...`, `*RETROC...`, `*FRAIS...` | Frais divers — **ignorés** |
+| `COUPONS` | Dividende — ne modifie pas le PRU |
+| `VIR...` | Virement — inclus dans solde espèces, exclu du calcul portefeuille |
+| `FRAIS...`, `*RETROC...` | Frais divers — ignorés dans les calculs |
 
 ---
 
@@ -96,91 +96,38 @@ CREATE TABLE operations (
 );
 ```
 
+### Table `settings`
+
+```sql
+CREATE TABLE settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+```
+
+Utilisée pour stocker des valeurs persistantes (ex : PV annuelle manuelle).
+
 ---
 
-## Algorithme CMP itératif (CRITIQUE)
+## Algorithme PRU/CMP itératif (CRITIQUE)
 
-**Base de calcul : `ABS(montant)` — frais de courtage inclus.** C'est la méthode officielle Boursorama, validée sur les données réelles.
+**Base de calcul : `ABS(montant)` — frais de courtage inclus.** Méthode officielle Boursorama validée sur données réelles.
 
-```python
-def calculate_portfolio(operations: list[Operation]) -> tuple[list[Position], list[Cycle]]:
-    """
-    Parcourt les opérations chronologiquement par valeur.
-    Retourne les positions actuelles et les cycles soldés.
-    """
-    # Grouper par valeur, trier par date
-    by_valeur = defaultdict(list)
-    for op in sorted(operations, key=lambda x: x.date_op):
-        if op.op_type.startswith(('ACHAT', 'VENTE', 'COUPONS')):
-            by_valeur[op.valeur].append(op)
+Principe :
+- Grouper les opérations par valeur, trier par `date_op` ASC
+- Maintenir un état courant : `qty`, `stock` (valeur au PRU), `cmp`
+- ACHAT : `stock += abs(montant)`, `qty += quantite`, `cmp = stock / qty`
+- VENTE : `pv = montant - cmp * quantite`, `stock -= cmp * quantite`, `qty -= quantite`
+- Si `abs(qty) < 0.001` après vente → cycle soldé, reset état
+- COUPONS : ne modifie pas le CMP, s'accumule dans `total_divs` et `cycle_divs`
+- Ventes partielles : enregistrement de `(date, pv)` dans `partial_pv_entries`
 
-    positions_actuelles = []
-    cycles_soldes = []
-
-    for valeur, ops in by_valeur.items():
-        # État courant
-        qty = 0.0
-        stock = 0.0   # valeur stock au CMP
-        cmp = 0.0
-
-        # Cycle en cours
-        cycle_open_date = None
-        cycle_pv = 0.0
-        cycle_divs = 0.0
-        total_divs = 0.0
-
-        for op in ops:
-            if op.op_type.startswith('ACHAT'):
-                cost = abs(op.montant)
-                stock += cost
-                qty += op.quantite
-                cmp = stock / qty
-                if cycle_open_date is None:
-                    cycle_open_date = op.date_op
-
-            elif op.op_type.startswith('VENTE'):
-                pv = op.montant - (cmp * op.quantite)
-                cycle_pv += pv
-                stock -= cmp * op.quantite
-                qty -= op.quantite
-
-                if abs(qty) < 0.001:  # Position soldée
-                    cycles_soldes.append(Cycle(
-                        valeur=valeur,
-                        isin=op.isin,
-                        open_date=cycle_open_date,
-                        close_date=op.date_op,
-                        realized_pv=cycle_pv,
-                        dividends=cycle_divs,
-                    ))
-                    # Reset pour prochain cycle
-                    qty = 0.0
-                    stock = 0.0
-                    cmp = 0.0
-                    cycle_open_date = None
-                    cycle_pv = 0.0
-                    cycle_divs = 0.0
-
-            elif op.op_type == 'COUPONS':
-                # Ne modifie PAS le CMP
-                total_divs += op.montant
-                cycle_divs += op.montant
-
-        # Position actuelle (qty > 0)
-        if qty > 0.001:
-            positions_actuelles.append(Position(
-                valeur=valeur,
-                isin=op.isin,
-                quantity=qty,
-                cmp=cmp,
-                total_dividends=total_divs,
-                current_dividends=cycle_divs,
-                open_date=cycle_open_date,
-                partial_pv=cycle_pv,
-            ))
-
-    return positions_actuelles, cycles_soldes
-```
+**Points d'attention :**
+- Tri chronologique strict (l'ordre impacte le PRU)
+- Même jour : traiter les ACHAT avant les VENTE
+- Seuil zéro : `abs(qty) < 0.001` (floating point)
+- `ACHAT COMPTANT ETR` traité comme `ACHAT COMPTANT`
+- Virements négatifs inclus dans solde espèces, exclus du calcul actions
 
 ---
 
@@ -191,280 +138,91 @@ def calculate_portfolio(operations: list[Operation]) -> tuple[list[Position], li
 | Métrique | Calcul |
 |---|---|
 | Quantité | `qty` |
-| PRU (CMP) | `cmp` |
+| PRU (CMP) | `cmp = stock / qty` |
 | Coût position | `cmp × qty` |
+| Cours actuel | Yahoo Finance (yfinance) |
+| PV latente | `(cours - cmp) × qty` |
+| PV latente % | `(cours / cmp - 1) × 100` |
 | Dividendes totaux | Tous les COUPONS sur cette valeur |
-| Dividendes position actuelle | COUPONS depuis le dernier passage à qty=0 |
-| PRU après dividendes | `(coût - div_actuels) / qty` |
-| Coût net | `coût - div_actuels` |
-| PV ventes partielles | PV des ventes partielles du cycle actuel |
-| Cours actuel | Yahoo Finance (via `yfinance`) |
-| PV latente | `(cours_actuel - cmp) × qty` |
-| PV latente % | `(cours_actuel / cmp - 1) × 100` |
+| Dividendes position | COUPONS depuis le dernier passage à qty=0 |
+| PRU après dividendes | `(coût - div_position) / qty` |
+| PV ventes partielles | PV cumulée des ventes partielles du cycle actuel |
 
-### Positions soldées (par cycle)
+### Synthèse
 
 | Métrique | Calcul |
 |---|---|
-| Date ouverture | Premier achat du cycle |
-| Date clôture | Dernière vente du cycle |
-| PV réalisée | `Σ(produit_vente - cmp×qty)` sur les ventes du cycle |
-| Dividendes | COUPONS reçus pendant le cycle |
-| Résultat net | PV réalisée + Dividendes |
+| Apports totaux | `Σ montant` des opérations VIR positifs |
+| Solde espèces | `Σ montant` de toutes les opérations |
+| Valeur des titres | `coût + pv_latente` |
+| Total PEA | `espèces + valeur_titres` |
+| PV réalisée | Cycles clos + ventes partielles en cours, par année |
+| Gain total | `pv_réalisée + pv_latente + dividendes` |
+| Performance % | `gain_total / apports × 100` |
+| Performance annualisée | `gain / apports / n_années × 100` |
+| Date exonération | Ouverture PEA + 5 ans = 22/08/2028 |
+
+### Performance journalière (Dashboard)
+
+Reconstruction de la valeur du portefeuille jour par jour depuis l'ouverture :
+- Rejouer toutes les opérations chronologiquement
+- Valeur = `espèces + Σ(qty_i × prix_i)` où `prix_i` = dernier cours connu
+- Fallback si cours absent : coût d'achat (ni gain ni perte fictive)
+- Comparaison avec apports cumulés
 
 ---
 
 ## Récupération des cours (Yahoo Finance)
 
-```python
-import yfinance as yf
+Mapping ISIN → ticker dans `src/quotes.py` :
 
-# Mapping ISIN → ticker Yahoo Finance
+```python
 ISIN_TO_TICKER = {
-    'LU1681043599': 'AMUNDI-MSCI-WORLD',   # AM.M.WOR.ETF EUR C
-    'IE0002XZSHO1': 'ISHS-MSCI-WORLD',     # ISHS VI-ISMWSPE EO
-    'FR0000120271': 'TTE.PA',               # TOTALENERGIES SE
-    'FR0000125486': 'DG.PA',                # VINCI
-    # À compléter au fur et à mesure
+    "LU1681043599": "CW8.PA",    # Amundi MSCI World
+    "IE0002XZSHO1": "EUNL.DE",   # iShares MSCI World (WPEA.PA hors service)
+    "FR0000120271": "TTE.PA",    # TotalEnergies
+    "FR0000125486": "DG.PA",     # Vinci
+    "FR0000120503": "EN.PA",     # Bouygues
+    "FR0000120073": "AI.PA",     # Air Liquide
+    "FR0013258662": "AYV.PA",    # ALD/Ayvens (ALD.PA hors service)
+    "FR0000131104": "BNP.PA",    # BNP Paribas
+    "FR0011950732": "ELIOR.PA",  # Elior
+    "FR0010112524": "NXI.PA",    # Nexity
+    "FR0000130809": "GLE.PA",    # Société Générale
+    "NL00150001Q9": "STLAM.MI",  # Stellantis (STLAM.PA hors service)
+    "NL0000226223": "STM.DE",    # STMicroelectronics (STM.PA hors service — Xetra EUR)
+    "FR0000124141": "VIE.PA",    # Veolia
 }
-
-def get_current_price(isin: str) -> float | None:
-    ticker = ISIN_TO_TICKER.get(isin)
-    if not ticker:
-        return None
-    try:
-        t = yf.Ticker(ticker)
-        return t.fast_info['last_price']
-    except:
-        return None
 ```
 
-**Note :** Le mapping ISIN→ticker doit être maintenu manuellement ou via une recherche automatique. Prévoir un mécanisme de fallback (afficher `N/A` si cours non disponible) sans bloquer l'affichage.
+**Règles de choix de ticker :**
+- Préférer les tickers EUR (`.PA`, `.DE`, `.MI`) pour éviter les décalages de change
+- `auto_adjust=False` pour l'historique (prix non ajustés aux dividendes)
+- Fallback automatique via `_find_ticker_auto()` pour les ISIN non mappés
+- Cache Streamlit : 5 min pour les cours, 1h pour l'historique
 
 ---
 
-## Import CSV
+## Import depuis la production
 
-### Import initial
+1. Upload CSV via onglet **Importer** dans l'app
+2. Traitement via `import_csv()` (fichier temporaire)
+3. Push automatique de `data/portfolio.db` sur GitHub via PyGithub
+4. Streamlit redéploie automatiquement
 
-```python
-def import_csv(filepath: str, db: Database) -> tuple[int, int]:
-    """
-    Retourne (nb_importées, nb_doublons_ignorés)
-    """
-```
-
-- Parser le CSV (UTF-8 BOM, séparateur `;`)
-- Pour chaque ligne, nettoyer :
-  - Date : `dd/mm/yyyy` → `datetime`
-  - Montant : float (déjà avec point décimal)
-  - Quantité : float
-- Filtrer les opérations sans Valeur/ISIN (virements, frais)
-- Insérer avec `INSERT OR IGNORE` (déduplication via contrainte UNIQUE)
-
-### Import incrémental (dossier inbox)
-
-Au démarrage de l'application, scanner `data/inbox/` :
-- Pour chaque fichier `.csv` non encore traité
-- Importer avec déduplication
-- Déplacer vers `data/inbox/processed/` après import réussi
-- Afficher un résumé : "X nouvelles opérations importées depuis fichier.csv"
-
-### Clé de déduplication
-
-```
-(date_op, isin, montant, quantite)
+**Secrets requis dans Streamlit Cloud :**
+```toml
+password = "..."
+github_token = "ghp_..."
+github_repo = "ldubedoutperso/portfolio-tracker"
 ```
 
 ---
 
-## Interface Streamlit — Pages
+## Points d'attention
 
-### Page 1 : Positions actuelles
-
-Tableau avec colonnes :
-- Valeur, ISIN
-- Quantité
-- PRU (CMP)
-- Coût position
-- Cours actuel (Yahoo Finance, avec indicateur de fraîcheur)
-- PV latente (€)
-- PV latente (%)
-- Dividendes totaux
-- Dividendes position actuelle
-- PRU après dividendes
-- PV ventes partielles
-
-Tri par défaut : PV latente décroissante.  
-Afficher en bas : **Total coût portefeuille**, **Total PV latente**.
-
-### Page 2 : Positions soldées
-
-Tableau avec colonnes :
-- Valeur
-- Date ouverture cycle
-- Date clôture cycle
-- PV réalisée (€)
-- Dividendes (€)
-- Résultat net (€)
-
-Une ligne par cycle (ex : STELLANTIS apparaît 3 fois, NEXITY 2 fois).  
-Tri par défaut : date clôture décroissante.  
-Afficher en bas : **Total PV réalisée**, **Total dividendes**, **Total net**.
-
-### Page 3 : Synthèse
-
-KPIs affichés en cards :
-- Solde espèces (= somme de tous les montants incluant virements)
-- PV réalisée totale
-- PV réalisée par année (tableau : Année / PV)
-- PV latente actuelle (temps réel)
-- **PV totale si sortie** = PV réalisée + PV latente
-- Total dividendes perçus
-
-### Page 4 : Mouvements
-
-Tableau de l'historique brut, lecture seule.  
-Filtres : par valeur, par type d'opération, par période.
-
-### Sidebar (toutes pages)
-
-- Bouton **"Vérifier inbox"** : scanner et importer les nouveaux CSV
-- Indicateur : dernière mise à jour des cours
-- Indicateur : nombre d'opérations en base
-
----
-
-## Valeurs de référence pour les tests
-
-Ces valeurs sont **validées** par comparaison avec Boursorama et l'algorithme Python testé sur les données réelles.
-
-```python
-# tests/test_calculator.py
-
-def test_positions_actuelles(portfolio):
-    pos = {p.valeur: p for p in portfolio.positions}
-
-    # AM.M.WOR.ETF EUR C
-    assert pos['AM.M.WOR.ETF EUR C'].quantity == 16
-    assert pos['AM.M.WOR.ETF EUR C'].cmp == pytest.approx(513.95, abs=0.01)
-    assert pos['AM.M.WOR.ETF EUR C'].current_dividends == pytest.approx(0.0, abs=0.01)
-
-    # TOTALENERGIES SE
-    assert pos['TOTALENERGIES SE'].quantity == 37
-    assert pos['TOTALENERGIES SE'].cmp == pytest.approx(55.7715, abs=0.001)
-    assert pos['TOTALENERGIES SE'].current_dividends == pytest.approx(165.79, abs=0.01)
-
-    # VINCI
-    assert pos['VINCI'].quantity == 7
-    assert pos['VINCI'].cmp == pytest.approx(122.37, abs=0.01)
-    assert pos['VINCI'].current_dividends == pytest.approx(6.30, abs=0.01)
-
-    # ISHS VI-ISMWSPE EO
-    assert pos['ISHS VI-ISMWSPE EO'].quantity == 823
-    assert pos['ISHS VI-ISMWSPE EO'].cmp == pytest.approx(5.6497, abs=0.001)
-
-
-def test_cycles_soldes(portfolio):
-    cycles = portfolio.cycles
-
-    # AIR LIQUIDE — 1 cycle
-    al = [c for c in cycles if c.valeur == 'AIR LIQUIDE']
-    assert len(al) == 1
-    assert al[0].realized_pv == pytest.approx(3.24, abs=0.01)
-
-    # STELLANTIS — 3 cycles
-    st = [c for c in cycles if c.valeur == 'STELLANTIS']
-    assert len(st) == 3
-    assert sum(c.realized_pv for c in st) == pytest.approx(37.94, abs=0.01)
-
-    # NEXITY — 2 cycles
-    nx = [c for c in cycles if c.valeur == 'NEXITY']
-    assert len(nx) == 2
-    assert sum(c.realized_pv for c in nx) == pytest.approx(60.28, abs=0.01)
-
-    # BOUYGUES — 1 cycle
-    bo = [c for c in cycles if c.valeur == 'BOUYGUES']
-    assert len(bo) == 1
-    assert bo[0].realized_pv == pytest.approx(211.62, abs=0.01)
-    assert bo[0].dividends == pytest.approx(44.00, abs=0.01)
-
-    # BNP PARIBAS — 1 cycle
-    bnp = [c for c in cycles if c.valeur == 'BNP PARIBAS']
-    assert len(bnp) == 1
-    assert bnp[0].realized_pv == pytest.approx(7.59, abs=0.01)
-    assert bnp[0].dividends == pytest.approx(9.20, abs=0.01)
-```
-
----
-
-## README — Installation
-
-```markdown
-## Installation
-
-### Prérequis
-- Python 3.10 ou supérieur
-
-### Windows
-```
-python -m venv venv
-venv\Scripts\activate
-pip install -r requirements.txt
-```
-
-### macOS / Linux
-```
-python3 -m venv venv
-source venv/bin/activate
-pip install -r requirements.txt
-```
-
-## Lancement
-
-```
-streamlit run src/app.py
-```
-
-L'application s'ouvre automatiquement dans le navigateur sur http://localhost:8501
-
-## Premier import
-
-1. Exporter l'onglet Mouvements de Bourse.xlsx en CSV (séparateur `;`, encodage UTF-8)
-2. Placer le fichier dans `data/inbox/`
-3. Lancer l'application et cliquer sur "Vérifier inbox"
-
-## Mises à jour
-
-1. Télécharger l'export CSV depuis Boursorama
-2. Placer le fichier dans `data/inbox/`
-3. Cliquer sur "Vérifier inbox" — les doublons sont automatiquement ignorés
-```
-
----
-
-## requirements.txt
-
-```
-streamlit>=1.32.0
-pandas>=2.0.0
-openpyxl>=3.1.0
-yfinance>=0.2.36
-pytest>=8.0.0
-```
-
----
-
-## Points d'attention pour l'implémentation
-
-1. **Tri chronologique strict** : l'algorithme CMP dépend de l'ordre des opérations. Toujours trier par `date_op` ASC avant le calcul.
-
-2. **Même jour, ordre indéterminé** : si un achat et une vente ont la même date, traiter les achats en premier (convention prudente).
-
-3. **Seuil de comparaison à zéro** : utiliser `abs(qty) < 0.001` et non `qty == 0` pour éviter les erreurs de floating point.
-
-4. **Cours Yahoo Finance** : certains ETF irlandais/luxembourgeois ont des tickers non standards. Prévoir un fallback propre (afficher `—` sans crasher).
-
-5. **ACHAT COMPTANT ETR** : traiter exactement comme `ACHAT COMPTANT` (même logique CMP).
-
-6. **Virements négatifs** (ex : VIR TUDI HOLDING 84 = -1000€) : inclure dans le calcul du solde espèces mais **exclure** du calcul portefeuille actions.
+1. **OneDrive verrouille `portfolio.db`** lors des `git rebase` → utiliser `git merge --no-rebase` ou `--force-with-lease`
+2. **Encodage Windows** : utiliser `PYTHONUTF8=1` pour les scripts Python en CLI
+3. **Tickers Yahoo Finance** : vérifier régulièrement — certains tickers `.PA` tombent hors service (ex : STLAM.PA, ALD.PA, STM.PA, WPEA.PA)
+4. **Performance journalière** : premier chargement lent (~10s) — mis en cache 1h via `@st.cache_data(ttl=3600)`
+5. **Heure d'import** : SQLite stocke `CURRENT_TIMESTAMP` en UTC → afficher avec `datetime(imported_at, 'localtime')`
