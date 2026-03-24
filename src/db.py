@@ -92,6 +92,6 @@ class Database:
 
     def get_last_import(self) -> str | None:
         row = self.conn.execute(
-            "SELECT MAX(datetime(imported_at, 'localtime')) FROM operations"
+            "SELECT MAX(imported_at) FROM operations"
         ).fetchone()
         return row[0] if row else None
