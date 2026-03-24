@@ -110,6 +110,107 @@ def page_dashboard():
         margin=dict(t=30, b=20, l=10, r=10),
     )
 
+
+    # ── Graphique performance journalière ──────────────────
+    st.subheader("Performance du portefeuille")
+
+    from datetime import date as _date_perf, timedelta
+
+    # Récupérer l'historique de toutes les ISINs vues dans les opérations
+    all_isins = list({op.isin for op in operations if op.isin and op.isin != "nan"})
+    first_op_date = min(op.date_op for op in operations) if operations else None
+
+    if first_op_date:
+        # Construire le lookup {isin: {date: prix}}
+        price_lookup: dict[str, dict] = {}
+        for isin in all_isins:
+            hist = fetch_history_cached(isin, str(first_op_date))
+            if hist:
+                price_lookup[isin] = {h_date: h_price for h_date, h_price in hist}
+
+        # Rejouer les opérations jour par jour
+        ops_sorted = sorted(operations, key=lambda o: o.date_op)
+        today_perf = _date_perf.today()
+        holdings: dict[str, float] = {}
+        holdings_cost: dict[str, float] = {}  # coût d'achat par ISIN (fallback si pas de prix)
+        cash = 0.0
+        deposits = 0.0
+        last_prices: dict[str, float] = {}
+        op_idx = 0
+        perf_rows = []
+        current_day = first_op_date
+
+        while current_day <= today_perf:
+            # Appliquer les opérations de ce jour
+            while op_idx < len(ops_sorted) and ops_sorted[op_idx].date_op <= current_day:
+                op = ops_sorted[op_idx]
+                cash += op.montant
+                if op.op_type.upper().startswith("VIR") and op.montant > 0:
+                    deposits += op.montant
+                if op.quantite and op.isin and op.isin != "nan":
+                    if op.op_type.startswith("ACHAT"):
+                        holdings[op.isin] = holdings.get(op.isin, 0.0) + op.quantite
+                        holdings_cost[op.isin] = holdings_cost.get(op.isin, 0.0) + abs(op.montant)
+                    elif op.op_type.startswith("VENTE"):
+                        holdings[op.isin] = holdings.get(op.isin, 0.0) - op.quantite
+                        # Réduire le coût proportionnellement
+                        total_qty = holdings[op.isin] + op.quantite
+                        if total_qty > 0:
+                            holdings_cost[op.isin] = holdings_cost.get(op.isin, 0.0) * (holdings[op.isin] / total_qty)
+                        else:
+                            holdings_cost[op.isin] = 0.0
+                op_idx += 1
+
+            # Mettre à jour les derniers prix connus
+            for isin, day_prices in price_lookup.items():
+                if current_day in day_prices:
+                    last_prices[isin] = day_prices[current_day]
+
+            # Valeur des titres : prix marché si dispo, sinon coût d'achat
+            titres = 0.0
+            for isin, qty in holdings.items():
+                if qty > 0.001:
+                    if isin in last_prices:
+                        titres += qty * last_prices[isin]
+                    else:
+                        titres += holdings_cost.get(isin, 0.0)  # fallback au coût
+            perf_rows.append({
+                "Date": current_day,
+                "Valeur PEA": cash + titres,
+                "Apports": deposits,
+            })
+            current_day += timedelta(days=1)
+
+        if perf_rows:
+            df_perf = pd.DataFrame(perf_rows)
+            # Garder seulement les jours ouvrés (où on a un prix)
+            df_perf = df_perf[df_perf["Valeur PEA"] > 0]
+
+            fig_perf = go.Figure()
+            fig_perf.add_trace(go.Scatter(
+                x=df_perf["Date"], y=df_perf["Valeur PEA"],
+                mode="lines",
+                name="Valeur PEA",
+                line=dict(color="#3b82f6", width=2),
+                fill="tozeroy",
+                fillcolor="rgba(59,130,246,0.08)",
+            ))
+            fig_perf.add_trace(go.Scatter(
+                x=df_perf["Date"], y=df_perf["Apports"],
+                mode="lines",
+                name="Apports cumulés",
+                line=dict(color="#f59e0b", width=2, dash="dash"),
+            ))
+            fig_perf.update_layout(
+                xaxis_title="Date", yaxis_title="EUR",
+                legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1),
+                height=350,
+                **CHART_LAYOUT,
+            )
+            st.plotly_chart(fig_perf, use_container_width=True)
+
+    st.divider()
+
     col1, col2 = st.columns(2)
 
     with col1:
@@ -324,14 +425,28 @@ def page_dashboard():
                     running_qty = 0.0
 
         if dca_rows:
+            from datetime import date as _date_dca
             df_dca = pd.DataFrame(dca_rows)
             colors_achats = ["#ef4444" if d > 0 else "#22c55e" for d in df_dca["Delta"]]
+
+            # Étendre la ligne PRU jusqu'à aujourd'hui ou la dernière vente
+            last_pru = df_dca["PRU"].iloc[-1]
+            if running_qty > 0.001:
+                # Position encore ouverte : étendre jusqu'à aujourd'hui
+                pru_end_date = _date_dca.today()
+            elif vente_rows:
+                # Position clôturée : étendre jusqu'à la dernière vente
+                pru_end_date = max(r["Date"] for r in vente_rows)
+            else:
+                pru_end_date = df_dca["Date"].iloc[-1]
+            pru_dates = list(df_dca["Date"]) + [pru_end_date]
+            pru_vals  = list(df_dca["PRU"])  + [last_pru]
 
             fig_dca = go.Figure()
 
             # Ligne PRU (step)
             fig_dca.add_trace(go.Scatter(
-                x=df_dca["Date"], y=df_dca["PRU"],
+                x=pru_dates, y=pru_vals,
                 mode="lines",
                 name="PRU courant",
                 line=dict(color="#3b82f6", width=2, shape="hv"),
