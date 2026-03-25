@@ -5,7 +5,7 @@ import yfinance as yf
 # à compléter/corriger au fur et à mesure.
 ISIN_TO_TICKER: dict[str, str] = {
     "LU1681043599": "CW8.PA",    # Amundi MSCI World Swap UCITS ETF EUR ACC
-    "IE0002XZSHO1": "EUNL.DE",   # iShares MSCI World Swap PEA UCITS ETF (WPEA.PA hors service)
+    "IE0002XZSHO1": "IE0002XZSHO1",  # iShares MSCI World Swap PEA UCITS ETF (WPEA.PA hors service, ISIN direct fonctionne)
     "FR0000120271": "TTE.PA",    # TOTALENERGIES SE
     "FR0000125486": "DG.PA",     # VINCI
     "FR0000120503": "EN.PA",     # BOUYGUES
@@ -27,7 +27,14 @@ def get_current_price(isin: str) -> float | None:
         return None
     try:
         t = yf.Ticker(ticker)
-        return t.fast_info["last_price"]
+        price = t.fast_info.get("last_price")
+        if price:
+            return price
+        # Fallback : dernier close de l'historique récent (ex: ISIN direct)
+        hist = t.history(period="5d", auto_adjust=False)
+        if not hist.empty:
+            return float(hist["Close"].iloc[-1])
+        return None
     except Exception:
         return None
 
