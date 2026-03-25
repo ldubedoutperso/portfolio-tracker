@@ -112,6 +112,85 @@ def page_dashboard():
         margin=dict(t=30, b=20, l=10, r=10),
     )
 
+    # --- Graphique performance journalière (pleine largeur) ---
+    from datetime import date as _date_perf, timedelta as _td
+
+    traded_isins = list(set(
+        op.isin for op in operations
+        if op.op_type.startswith(("ACHAT", "VENTE")) and op.isin and op.isin != "nan"
+    ))
+
+    if traded_isins:
+        with st.spinner("Chargement de la performance journalière…"):
+            min_date_perf = min(op.date_op for op in operations)
+
+            isin_hist: dict = {}
+            for isin in traded_isins:
+                hist = fetch_history_cached(isin, str(min_date_perf))
+                if hist:
+                    isin_hist[isin] = {d: p for d, p in hist}
+
+            ops_by_date_perf: dict = {}
+            for op in sorted(operations, key=lambda o: (o.date_op, 0 if o.op_type.startswith("ACHAT") else 1)):
+                ops_by_date_perf.setdefault(op.date_op, []).append(op)
+
+            holdings_perf: dict = {}
+            holdings_cost_perf: dict = {}
+            last_prices_perf: dict = {}
+            cash_perf = 0.0
+            apports_perf = 0.0
+            perf_dates, perf_values, apport_values = [], [], []
+
+            d = min_date_perf
+            today_perf = _date_perf.today()
+            while d <= today_perf:
+                for isin, hd in isin_hist.items():
+                    if d in hd:
+                        last_prices_perf[isin] = hd[d]
+                if d in ops_by_date_perf:
+                    for op in ops_by_date_perf[d]:
+                        cash_perf += op.montant
+                        if op.op_type.upper().startswith("VIR") and op.montant > 0:
+                            apports_perf += op.montant
+                        if op.op_type.startswith("ACHAT"):
+                            holdings_perf[op.isin] = holdings_perf.get(op.isin, 0.0) + op.quantite
+                            holdings_cost_perf[op.isin] = holdings_cost_perf.get(op.isin, 0.0) + abs(op.montant)
+                        elif op.op_type.startswith("VENTE"):
+                            prev_qty = holdings_perf.get(op.isin, 0.0)
+                            if prev_qty > 0:
+                                holdings_cost_perf[op.isin] = holdings_cost_perf.get(op.isin, 0.0) * max(0.0, 1 - op.quantite / prev_qty)
+                            holdings_perf[op.isin] = max(0.0, holdings_perf.get(op.isin, 0.0) - op.quantite)
+                titres_perf = sum(
+                    (last_prices_perf.get(isin) if isin in last_prices_perf else holdings_cost_perf.get(isin, 0.0)) * qty
+                    for isin, qty in holdings_perf.items() if qty > 0.001
+                )
+                perf_dates.append(d)
+                perf_values.append(cash_perf + titres_perf)
+                apport_values.append(apports_perf)
+                d += _td(days=1)
+
+        if perf_dates:
+            st.subheader("Performance du portefeuille")
+            fig_perf = go.Figure()
+            fig_perf.add_trace(go.Scatter(
+                x=perf_dates, y=perf_values,
+                mode="lines", name="Valeur PEA",
+                line=dict(color="#22c55e", width=2),
+                fill="tozeroy", fillcolor="rgba(34,197,94,0.08)",
+            ))
+            fig_perf.add_trace(go.Scatter(
+                x=perf_dates, y=apport_values,
+                mode="lines", name="Apports cumulés",
+                line=dict(color="#3b82f6", width=2, dash="dash"),
+            ))
+            fig_perf.update_layout(
+                xaxis_title="Date", yaxis_title="EUR",
+                legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="right", x=1),
+                height=400, **CHART_LAYOUT,
+            )
+            st.plotly_chart(fig_perf, use_container_width=True)
+            st.divider()
+
     col1, col2 = st.columns(2)
 
     with col1:
@@ -329,11 +408,23 @@ def page_dashboard():
             df_dca = pd.DataFrame(dca_rows)
             colors_achats = ["#ef4444" if d > 0 else "#22c55e" for d in df_dca["Delta"]]
 
+            # Étendre la ligne PRU jusqu'à la dernière vente ou aujourd'hui
+            from datetime import date as _date_dca
+            last_pru = df_dca["PRU"].iloc[-1]
+            if running_qty > 0.001:
+                pru_end_date = _date_dca.today()
+            elif vente_rows:
+                pru_end_date = max(r["Date"] for r in vente_rows)
+            else:
+                pru_end_date = df_dca["Date"].iloc[-1]
+            pru_dates = list(df_dca["Date"]) + [pru_end_date]
+            pru_vals  = list(df_dca["PRU"])  + [last_pru]
+
             fig_dca = go.Figure()
 
             # Ligne PRU (step)
             fig_dca.add_trace(go.Scatter(
-                x=df_dca["Date"], y=df_dca["PRU"],
+                x=pru_dates, y=pru_vals,
                 mode="lines",
                 name="PRU courant",
                 line=dict(color="#3b82f6", width=2, shape="hv"),
