@@ -5,18 +5,19 @@ import yfinance as yf
 # à compléter/corriger au fur et à mesure.
 ISIN_TO_TICKER: dict[str, str] = {
     "LU1681043599": "CW8.PA",    # Amundi MSCI World Swap UCITS ETF EUR ACC
-    "IE0002XZSHO1": "WPEA.PA",   # iShares MSCI World Swap PEA UCITS ETF EUR ACC
+    "IE0002XZSHO1": "EUNL.DE",   # iShares MSCI World Swap PEA UCITS ETF (WPEA.PA hors service)
     "FR0000120271": "TTE.PA",    # TOTALENERGIES SE
     "FR0000125486": "DG.PA",     # VINCI
     "FR0000120503": "EN.PA",     # BOUYGUES
     "FR0000120073": "AI.PA",     # AIR LIQUIDE
-    "FR0013258662": "ALD.PA",    # ALD
+    "FR0013258662": "AYV.PA",    # ALD (fusionné dans Ayvens, ALD.PA hors service)
     "FR0000131104": "BNP.PA",    # BNP PARIBAS
     "FR0011950732": "ELIOR.PA",  # ELIOR GROUP
     "FR0010112524": "NXI.PA",    # NEXITY
     "FR0000130809": "GLE.PA",    # SOCIETE GENERALE
-    "NL00150001Q9": "STLAM.PA",  # STELLANTIS
-    "NL0000226223": "STM.PA",    # STMICROELECTRONICS
+    "NL00150001Q9": "STLAM.MI",  # STELLANTIS (STLAM.PA hors service → Milan EUR)
+    "NL0000226223": "STM.DE",    # STMICROELECTRONICS (STM.PA hors service → Xetra EUR)
+    "FR0000124141": "VIE.PA",    # VEOLIA ENVIRONNEMENT
 }
 
 
