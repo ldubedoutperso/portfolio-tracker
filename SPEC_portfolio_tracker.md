@@ -19,12 +19,13 @@ portfolio-tracker/
 │   ├── importer.py          # Import CSV (initial + incrémental + upload)
 │   ├── calculator.py        # Algorithme PRU/CMP itératif
 │   ├── models.py            # Dataclasses Operation, Position, Cycle
-│   ├── db.py                # Accès SQLite + settings clé/valeur
-│   ├── quotes.py            # Cours temps réel + historique via yfinance
+│   ├── db.py                # Accès SQLite + settings + ticker_cache
+│   ├── quotes.py            # Cours yfinance + auto-détection des tickers
 │   └── app.py               # Application Streamlit (6 pages)
 ├── data/
-│   ├── portfolio.db         # Base SQLite (commitée sur GitHub)
-│   └── inbox/               # Dépôt local CSV (non utilisé en prod)
+│   ├── portfolio.db              # Base SQLite (commitée sur GitHub)
+│   ├── manual_operations.json    # Ops manuelles (titres non cotés, ex. TUDI FAIR 2)
+│   └── inbox/                    # Dépôt local CSV (non utilisé en prod)
 ├── tests/
 │   ├── conftest.py
 │   └── test_calculator.py
@@ -107,6 +108,21 @@ CREATE TABLE settings (
 
 Utilisée pour stocker des valeurs persistantes (ex : PV annuelle manuelle).
 
+### Table `ticker_cache`
+
+```sql
+CREATE TABLE ticker_cache (
+    isin TEXT PRIMARY KEY,
+    ticker TEXT NOT NULL,
+    resolved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+```
+
+Cache des correspondances ISIN → ticker yfinance résolues automatiquement.
+Évite de re-requêter Yahoo Finance à chaque démarrage. Le mapping manuel
+`ISIN_TO_TICKER` dans `quotes.py` garde priorité sur le cache (utile pour
+corriger les cas où l'auto-détection se trompe).
+
 ---
 
 ## Algorithme PRU/CMP itératif (CRITIQUE)
@@ -153,8 +169,8 @@ Principe :
 | Métrique | Calcul |
 |---|---|
 | Apports totaux | `Σ montant` des opérations VIR positifs |
-| Solde espèces | `Σ montant` de toutes les opérations |
-| Valeur des titres | `coût + pv_latente` |
+| Solde espèces | `Σ montant` des opérations **hors `source_file = 'manual'`** |
+| Valeur des titres | `coût + pv_latente` (titres non cotés valorisés au coût via fallback) |
 | Total PEA | `espèces + valeur_titres` |
 | PV réalisée | Cycles clos + ventes partielles en cours, par année |
 | Gain total | `pv_réalisée + pv_latente + dividendes` |
@@ -174,32 +190,92 @@ Reconstruction de la valeur du portefeuille jour par jour depuis l'ouverture :
 
 ## Récupération des cours (Yahoo Finance)
 
-Mapping ISIN → ticker dans `src/quotes.py` :
+Trois niveaux de résolution ISIN → ticker dans `src/quotes.py` :
+
+1. **`ISIN_TO_TICKER` (overrides manuels, priorité 1)** — pour corriger les cas où l'auto-détection se trompe et pour les non-cotés (ticker vide pour skip yfinance) :
 
 ```python
 ISIN_TO_TICKER = {
-    "LU1681043599": "CW8.PA",    # Amundi MSCI World
-    "IE0002XZSHO1": "EUNL.DE",   # iShares MSCI World (WPEA.PA hors service)
-    "FR0000120271": "TTE.PA",    # TotalEnergies
-    "FR0000125486": "DG.PA",     # Vinci
-    "FR0000120503": "EN.PA",     # Bouygues
-    "FR0000120073": "AI.PA",     # Air Liquide
-    "FR0013258662": "AYV.PA",    # ALD/Ayvens (ALD.PA hors service)
-    "FR0000131104": "BNP.PA",    # BNP Paribas
-    "FR0011950732": "ELIOR.PA",  # Elior
-    "FR0010112524": "NXI.PA",    # Nexity
-    "FR0000130809": "GLE.PA",    # Société Générale
-    "NL00150001Q9": "STLAM.MI",  # Stellantis (STLAM.PA hors service)
-    "NL0000226223": "STM.DE",    # STMicroelectronics (STM.PA hors service — Xetra EUR)
-    "FR0000124141": "VIE.PA",    # Veolia
+    "LU1681043599": "CW8.PA",        # Amundi MSCI World
+    "IE0002XZSHO1": "IE0002XZSHO1",  # iShares MSCI World PEA (ISIN direct)
+    "FR0000120271": "TTE.PA",        # TotalEnergies
+    "FR0000125486": "DG.PA",         # Vinci
+    "FR0000120503": "EN.PA",         # Bouygues
+    "FR0000120073": "AI.PA",         # Air Liquide
+    "FR0013258662": "AYV.PA",        # ALD/Ayvens
+    "FR0000131104": "BNP.PA",        # BNP Paribas
+    "FR0011950732": "ELIOR.PA",      # Elior
+    "FR0010112524": "NXI.PA",        # Nexity
+    "FR0000130809": "GLE.PA",        # Société Générale
+    "NL00150001Q9": "STLAM.MI",      # Stellantis (Milan EUR)
+    "NL0000226223": "STM.DE",        # STMicroelectronics (Xetra EUR)
+    "FR0000124141": "VIE.PA",        # Veolia
+    "FR0000121667": "EL.PA",         # EssilorLuxottica
+    "TUDI_FAIR_2": "",               # Non coté — skip yfinance, valorisé au coût
 }
 ```
+
+2. **Cache DB `ticker_cache` (priorité 2)** — chargé en mémoire au démarrage via `load_cache(db)`.
+
+3. **Auto-détection `discover_and_cache(isin, valeur, db)` (priorité 3)** :
+   - Tentative 1 : `yf.Ticker(isin)` direct (marche pour certains ETF)
+   - Tentative 2 : `yf.Search(valeur)` avec priorité `.PA` puis autres places EUR (`.AS`, `.BR`, `.LS`, `.MC`, `.MI`, `.DE`, `.F`, `.VI`)
+   - Résultat persisté en DB (`ticker_cache`) pour ne pas re-requêter
+
+L'auto-détection s'exécute au chargement de l'app pour tout ISIN traité (ACHAT/VENTE)
+absent de `ISIN_TO_TICKER`. Cache Streamlit `@st.cache_data(ttl=86400)` pour éviter
+les re-tentatives à chaque rerun.
 
 **Règles de choix de ticker :**
 - Préférer les tickers EUR (`.PA`, `.DE`, `.MI`) pour éviter les décalages de change
 - `auto_adjust=False` pour l'historique (prix non ajustés aux dividendes)
-- Fallback automatique via `_find_ticker_auto()` pour les ISIN non mappés
 - Cache Streamlit : 5 min pour les cours, 1h pour l'historique
+- Pour un titre non coté : ajouter l'ISIN à `ISIN_TO_TICKER` avec ticker vide (`""`) → `get_current_price` retourne `None`, fallback à coût
+
+---
+
+## Opérations manuelles (titres non cotés)
+
+Certains titres présents dans le PEA Boursorama (FCPI, FCPR, fonds non cotés
+type **TUDI FAIR 2**) n'apparaissent **pas** dans le CSV Mouvements exporté.
+Pour les matérialiser dans l'app :
+
+### Fichier `data/manual_operations.json`
+
+```json
+[
+  {
+    "date_op": "2024-01-01",
+    "op_type": "ACHAT",
+    "valeur": "TUDI FAIR 2",
+    "isin": "TUDI_FAIR_2",
+    "montant": -1000.0,
+    "quantite": 1000.0
+  }
+]
+```
+
+Chargé au démarrage de l'app via `load_manual_operations()`, ces opérations
+sont injectées dans la liste `operations` avec `source_file = "manual"`,
+puis traitées par `calculate_portfolio` comme des achats normaux.
+
+### Filtrage du cash
+
+**Important** : ces ops sont **exclues du calcul du solde espèces** car le
+flux de souscription correspondant n'est pas dans les CSV Boursorama (qui
+restent la source de vérité du cash). Sinon : double-déduction → cash négatif.
+
+```python
+solde_especes = sum(op.montant for op in operations if op.source_file != "manual")
+```
+
+Idem pour `cash_perf` et `apports_perf` dans la courbe de performance journalière.
+
+### Valorisation
+
+Comme leur ticker est vide (`""`) dans `ISIN_TO_TICKER`, `get_current_price`
+renvoie `None`. La page Synthèse et la courbe utilisent alors le **coût payé**
+comme valeur (ni gain ni perte fictive).
 
 ---
 
@@ -223,6 +299,8 @@ github_repo = "ldubedoutperso/portfolio-tracker"
 
 1. **OneDrive verrouille `portfolio.db`** lors des `git rebase` → utiliser `git merge --no-rebase` ou `--force-with-lease`
 2. **Encodage Windows** : utiliser `PYTHONUTF8=1` pour les scripts Python en CLI
-3. **Tickers Yahoo Finance** : vérifier régulièrement — certains tickers `.PA` tombent hors service (ex : STLAM.PA, ALD.PA, STM.PA, WPEA.PA)
+3. **Tickers Yahoo Finance** : vérifier régulièrement — certains tickers `.PA` tombent hors service (ex : STLAM.PA, ALD.PA, STM.PA, WPEA.PA). L'auto-détection résout les nouveaux ISIN mais peut se tromper sur les ETF aux noms tronqués → override manuel dans `ISIN_TO_TICKER` au besoin
 4. **Performance journalière** : premier chargement lent (~10s) — mis en cache 1h via `@st.cache_data(ttl=3600)`
 5. **Heure d'import** : SQLite stocke `CURRENT_TIMESTAMP` en UTC → afficher avec `datetime(imported_at, 'localtime')`
+6. **Fallback courbe perf** : si un ISIN n'a aucun cours yfinance, le code utilise le **coût cumulé** (`holdings_cost_perf[isin]`) comme valeur — **pas** `coût × qty` (ex-bug). Attention si modification du calcul `titres_perf` dans `app.py`
+7. **Ops manuelles** : toujours filtrer par `source_file != "manual"` dans tout calcul de cash/apports — sinon double-déduction
