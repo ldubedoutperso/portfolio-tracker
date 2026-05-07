@@ -207,9 +207,10 @@ def page_dashboard():
                         last_prices_perf[isin] = hd[d]
                 if d in ops_by_date_perf:
                     for op in ops_by_date_perf[d]:
-                        cash_perf += op.montant
-                        if op.op_type.upper().startswith("VIR") and op.montant > 0:
-                            apports_perf += op.montant
+                        if op.source_file != "manual":
+                            cash_perf += op.montant
+                            if op.op_type.upper().startswith("VIR") and op.montant > 0:
+                                apports_perf += op.montant
                         if op.op_type.startswith("ACHAT"):
                             holdings_perf[op.isin] = holdings_perf.get(op.isin, 0.0) + op.quantite
                             holdings_cost_perf[op.isin] = holdings_cost_perf.get(op.isin, 0.0) + abs(op.montant)
@@ -710,7 +711,9 @@ def page_synthese():
 
     pv_realisee = sum(v for y, v in pv_by_year.items() if y != current_year) + pv_current
     total_div = sum(op.montant for op in operations if op.op_type == "COUPONS")
-    solde_especes = sum(op.montant for op in operations)
+    # Exclure les ops manuelles (titres non cotés) : leur achat n'apparaît pas
+    # dans les flux de cash Boursorama, on ne doit pas déduire deux fois.
+    solde_especes = sum(op.montant for op in operations if op.source_file != "manual")
 
     total_cost = sum(p.cost for p in positions)
     known_pv_items = [
