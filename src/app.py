@@ -10,7 +10,13 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.calculator import calculate_portfolio
 from src.db import Database
 from src.importer import process_inbox
-from src.quotes import get_prices_batch, get_history
+from src.quotes import (
+    ISIN_TO_TICKER,
+    discover_and_cache,
+    get_history,
+    get_prices_batch,
+    load_cache,
+)
 
 DB_PATH = Path(__file__).parent.parent / "data" / "portfolio.db"
 INBOX_DIR = Path(__file__).parent.parent / "data" / "inbox"
@@ -49,6 +55,21 @@ def fetch_history_cached(isin: str, start: str) -> list | None:
 # --- Initialisation ---
 INBOX_DIR.mkdir(parents=True, exist_ok=True)
 db = Database(str(DB_PATH))
+load_cache(db)
+
+
+@st.cache_data(ttl=86400)
+def resolve_unknown_tickers(items: tuple) -> int:
+    """Résout les ISIN absents de ISIN_TO_TICKER via yfinance et les cache en DB.
+    items : tuple de (isin, valeur). Cache 24h pour éviter de re-tenter à chaque rerun.
+    Retourne le nombre de tickers résolus.
+    """
+    resolved = 0
+    for isin, valeur in items:
+        if isin and isin not in ISIN_TO_TICKER:
+            if discover_and_cache(isin, valeur, db):
+                resolved += 1
+    return resolved
 
 # --- Sidebar ---
 with st.sidebar:
@@ -69,6 +90,19 @@ with st.sidebar:
 # --- Chargement des données ---
 operations = db.get_all_operations()
 positions, cycles = calculate_portfolio(operations)
+
+# Auto-détection des nouveaux tickers (ISIN traités mais pas encore mappés)
+traded_pairs = tuple(sorted({
+    (op.isin, op.valeur) for op in operations
+    if op.isin and op.isin != "nan"
+    and op.op_type.startswith(("ACHAT", "VENTE"))
+    and op.isin not in ISIN_TO_TICKER
+}))
+if traded_pairs:
+    with st.spinner(f"Recherche des tickers pour {len(traded_pairs)} valeur(s) inconnue(s)…"):
+        n_resolved = resolve_unknown_tickers(traded_pairs)
+    if n_resolved:
+        fetch_prices.clear()
 
 if positions:
     prices = fetch_prices(tuple(p.isin for p in positions))

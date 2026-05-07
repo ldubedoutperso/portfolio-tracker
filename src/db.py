@@ -33,7 +33,32 @@ class Database:
                 value TEXT NOT NULL
             )
         """)
+        self.conn.execute("""
+            CREATE TABLE IF NOT EXISTS ticker_cache (
+                isin TEXT PRIMARY KEY,
+                ticker TEXT NOT NULL,
+                resolved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
         self.conn.commit()
+
+    def get_cached_ticker(self, isin: str) -> str | None:
+        row = self.conn.execute(
+            "SELECT ticker FROM ticker_cache WHERE isin = ?", (isin,)
+        ).fetchone()
+        return row["ticker"] if row else None
+
+    def set_cached_ticker(self, isin: str, ticker: str) -> None:
+        self.conn.execute(
+            "INSERT OR REPLACE INTO ticker_cache (isin, ticker, resolved_at) "
+            "VALUES (?, ?, CURRENT_TIMESTAMP)",
+            (isin, ticker),
+        )
+        self.conn.commit()
+
+    def get_all_cached_tickers(self) -> dict[str, str]:
+        rows = self.conn.execute("SELECT isin, ticker FROM ticker_cache").fetchall()
+        return {r["isin"]: r["ticker"] for r in rows}
 
     def get_setting(self, key: str, default: str | None = None) -> str | None:
         row = self.conn.execute(
