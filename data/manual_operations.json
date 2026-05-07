@@ -1,0 +1,11 @@
+[
+  {
+    "date_op": "2024-01-01",
+    "op_type": "ACHAT",
+    "valeur": "TUDI FAIR 2",
+    "isin": "TUDI_FAIR_2",
+    "montant": -1000.0,
+    "quantite": 1000.0,
+    "_comment": "Titre non coté — ajuster date_op à la date réelle de souscription"
+  }
+]

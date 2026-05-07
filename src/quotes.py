@@ -18,6 +18,7 @@ ISIN_TO_TICKER: dict[str, str] = {
     "NL0000226223": "STM.DE",    # STMICROELECTRONICS (STM.PA hors service → Xetra EUR)
     "FR0000124141": "VIE.PA",    # VEOLIA ENVIRONNEMENT
     "FR0000121667": "EL.PA",     # ESSILORLUXOTTICA
+    "TUDI_FAIR_2": "",           # Non coté — ticker vide pour skip yfinance, valorisé au coût
 }
 
 _EUR_SUFFIXES = (".PA", ".AS", ".BR", ".LS", ".MC", ".MI", ".DE", ".F", ".VI")

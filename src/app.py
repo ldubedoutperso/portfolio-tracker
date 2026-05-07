@@ -1,5 +1,6 @@
+import json
 import sys
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 
 import pandas as pd
@@ -10,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 from src.calculator import calculate_portfolio
 from src.db import Database
 from src.importer import process_inbox
+from src.models import Operation
 from src.quotes import (
     ISIN_TO_TICKER,
     discover_and_cache,
@@ -20,6 +22,7 @@ from src.quotes import (
 
 DB_PATH = Path(__file__).parent.parent / "data" / "portfolio.db"
 INBOX_DIR = Path(__file__).parent.parent / "data" / "inbox"
+MANUAL_OPS_PATH = Path(__file__).parent.parent / "data" / "manual_operations.json"
 
 st.set_page_config(page_title="Portfolio PEA", layout="wide")
 
@@ -87,8 +90,29 @@ with st.sidebar:
     if last_import:
         st.caption(f"Dernier import : {last_import[:19]}")
 
+def load_manual_operations() -> list[Operation]:
+    """Charge les opérations manuelles (titres non cotés, etc.) depuis JSON."""
+    if not MANUAL_OPS_PATH.exists():
+        return []
+    with open(MANUAL_OPS_PATH, encoding="utf-8") as f:
+        entries = json.load(f)
+    return [
+        Operation(
+            date_op=date.fromisoformat(e["date_op"]),
+            op_type=e["op_type"],
+            valeur=e["valeur"],
+            isin=e["isin"],
+            montant=float(e["montant"]),
+            quantite=float(e["quantite"]),
+            source_file="manual",
+        )
+        for e in entries
+    ]
+
+
 # --- Chargement des données ---
-operations = db.get_all_operations()
+operations = db.get_all_operations() + load_manual_operations()
+operations.sort(key=lambda op: op.date_op)
 positions, cycles = calculate_portfolio(operations)
 
 # Auto-détection des nouveaux tickers (ISIN traités mais pas encore mappés)
@@ -195,7 +219,8 @@ def page_dashboard():
                                 holdings_cost_perf[op.isin] = holdings_cost_perf.get(op.isin, 0.0) * max(0.0, 1 - op.quantite / prev_qty)
                             holdings_perf[op.isin] = max(0.0, holdings_perf.get(op.isin, 0.0) - op.quantite)
                 titres_perf = sum(
-                    (last_prices_perf.get(isin) if isin in last_prices_perf else holdings_cost_perf.get(isin, 0.0)) * qty
+                    last_prices_perf[isin] * qty if isin in last_prices_perf
+                    else holdings_cost_perf.get(isin, 0.0)
                     for isin, qty in holdings_perf.items() if qty > 0.001
                 )
                 perf_dates.append(d)
