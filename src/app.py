@@ -19,6 +19,7 @@ from src.quotes import (
     get_prices_batch,
     load_cache,
 )
+from src.veille import page_veille
 
 DB_PATH = Path(__file__).parent.parent / "data" / "portfolio.db"
 INBOX_DIR = Path(__file__).parent.parent / "data" / "inbox"
@@ -79,7 +80,7 @@ with st.sidebar:
     st.title("Portfolio PEA")
     page = st.radio(
         "Navigation",
-        ["Dashboard", "Synthèse", "Positions actuelles", "Positions soldées", "Mouvements", "Importer"],
+        ["Dashboard", "Synthèse", "Positions actuelles", "Positions soldées", "Mouvements", "Veille", "Importer"],
     )
     st.divider()
 
@@ -965,5 +966,7 @@ elif page == "Synthèse":
     page_synthese()
 elif page == "Mouvements":
     page_mouvements()
+elif page == "Veille":
+    page_veille()
 elif page == "Importer":
     page_importer()
